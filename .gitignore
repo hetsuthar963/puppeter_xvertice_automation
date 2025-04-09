@@ -8,3 +8,6 @@ logs
 # OS files
 .DS_Store
 Thumbs.db
+
+user_data
+user_data/*

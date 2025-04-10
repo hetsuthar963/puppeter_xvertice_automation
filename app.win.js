@@ -60,6 +60,28 @@ const log = (type, status, message, retryInfo = "") => {
   );
 };
 
+// Add these helper functions before the main execution block
+const showMenu = async () => {
+  console.log("\n=== Upload Menu ===");
+  console.log("1. Run for all failed uploads");
+  console.log("2. Terminate process");
+  console.log("3. Run for individual file");
+  const choice = await waitForUserInput("\nEnter your choice (1-3): ");
+  return choice;
+};
+
+const getIndividualFile = async (images) => {
+  console.log("\nAvailable files in src directory:");
+  images.forEach((file) => {
+    console.log(`${file}`);
+  });
+  const fileName = await waitForUserInput("\nEnter the exact file name: ");
+  if (images.includes(fileName)) {
+    return fileName;
+  }
+  return null;
+};
+
 (async () => {
   const browser = await puppeteer.launch({
     headless: false,
@@ -397,5 +419,222 @@ const log = (type, status, message, retryInfo = "") => {
     failedUploads.forEach((file) => {
       log("FILE", "FAIL", `✗ ${file}`);
     });
+
+    const choice = await showMenu();
+    let imagesToProcess = [];
+
+    switch (choice) {
+      case "1":
+        imagesToProcess = failedUploads;
+        log("PROCESS", "START", "Retrying failed uploads...");
+        break;
+      case "2":
+        log("PROCESS", "INFO", "Process terminated by user");
+        await browser.close();
+        return;
+      case "3":
+        const selectedFile = await getIndividualFile(failedUploads);
+        if (selectedFile) {
+          imagesToProcess = [selectedFile];
+          log("PROCESS", "START", `Processing selected file: ${selectedFile}`);
+        } else {
+          log("PROCESS", "FAIL", "Invalid file selected. Exiting...");
+          await browser.close();
+          return;
+        }
+        break;
+      default:
+        log("PROCESS", "FAIL", "Invalid choice. Exiting...");
+        await browser.close();
+        return;
+    }
+
+    // Process the selected files
+    if (imagesToProcess.length > 0) {
+      for (let image of imagesToProcess) {
+        const imagePath = path.join(imagesDirectory, image);
+        log("FILE", "INFO", `Processing: ${image}`);
+
+        try {
+          log("CHECK", "START", "Looking for existing file");
+          await removeExistingFile();
+
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          log("UPLOAD", "START", "Uploading new file");
+          await page.evaluate((selector) => {
+            const fileInput = document.querySelector(selector);
+            if (fileInput) fileInput.value = "";
+          }, inputFileSelector);
+
+          const input = await page.$(inputFileSelector);
+          await input.uploadFile(imagePath);
+
+          await page.waitForFunction(
+            (selector) => {
+              const input = document.querySelector(selector);
+              return input && input.files && input.files.length > 0;
+            },
+            { timeout: 5000 },
+            inputFileSelector
+          );
+          log("UPLOAD", "SUCCESS", "File loaded into input");
+
+          log("BUTTON", "START", "Waiting for upload button");
+          let uploadButton;
+          try {
+            await page.waitForFunction(
+              () => {
+                const buttons = Array.from(document.querySelectorAll("button"));
+                return buttons.some(
+                  (btn) => btn.textContent.trim() === "Upload"
+                );
+              },
+              { timeout: 10000 }
+            );
+
+            uploadButton = await page.evaluateHandle(() => {
+              const buttons = Array.from(document.querySelectorAll("button"));
+              const button = buttons.find(
+                (btn) => btn.textContent.trim() === "Upload"
+              );
+              return button || null;
+            });
+
+            if (!uploadButton) {
+              log(
+                "BUTTON",
+                "FAIL",
+                "Upload button not found after file input. Skipping..."
+              );
+              continue;
+            }
+            log("BUTTON", "SUCCESS", "Upload button detected.");
+          } catch (error) {
+            log(
+              "BUTTON",
+              "FAIL",
+              `Error locating the upload button: ${error.message}`
+            );
+            continue;
+          }
+
+          try {
+            log(
+              "BUTTON",
+              "INFO",
+              "Waiting for the upload button to become enabled..."
+            );
+            let buttonEnabled = false;
+            for (let attempt = 0; attempt < 100; attempt++) {
+              buttonEnabled = await page.evaluate((button) => {
+                if (!button) return false;
+                return (
+                  window.getComputedStyle(button).opacity !== "0.5" &&
+                  !button.disabled
+                );
+              }, uploadButton);
+
+              if (buttonEnabled) {
+                log(
+                  "BUTTON",
+                  "SUCCESS",
+                  "Upload button is now enabled",
+                  `Attempt: ${attempt + 1}/100`
+                );
+                break;
+              }
+
+              log(
+                "BUTTON",
+                "INFO",
+                "Upload button is still disabled",
+                `Retry: ${attempt + 1}/100`
+              );
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+
+            if (!buttonEnabled) {
+              log(
+                "BUTTON",
+                "FAIL",
+                "Upload button did not become enabled after retries. Skipping..."
+              );
+              continue;
+            }
+          } catch (error) {
+            log(
+              "BUTTON",
+              "FAIL",
+              `Error waiting for the upload button to become enabled: ${error.message}`
+            );
+            continue;
+          }
+
+          try {
+            log("BUTTON", "INFO", "Clicking the upload button...");
+            await uploadButton.click();
+            log("BUTTON", "SUCCESS", "Upload button clicked successfully.");
+          } catch (error) {
+            log(
+              "BUTTON",
+              "FAIL",
+              `Error clicking the upload button: ${error.message}`
+            );
+            continue;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          log("CLEANUP", "START", "Removing uploaded file");
+          try {
+            const removeButton = await page.evaluateHandle(() => {
+              const buttons = Array.from(document.querySelectorAll("button"));
+              return (
+                buttons.find(
+                  (btn) => btn.textContent.trim() === "Remove file"
+                ) || null
+              );
+            });
+
+            const removeButtonExists = await page.evaluate(
+              (button) => !!button,
+              removeButton
+            );
+
+            if (removeButtonExists) {
+              log(
+                "REMOVE",
+                "INFO",
+                "'Remove file' button detected. Clicking..."
+              );
+              await removeButton.click();
+              log(
+                "REMOVE",
+                "SUCCESS",
+                "'Remove file' button clicked successfully."
+              );
+            }
+          } catch (error) {
+            log(
+              "REMOVE",
+              "FAIL",
+              `Error with Remove file button: ${error.message}`
+            );
+            continue;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          successfulUploads.push(image);
+          log("FILE", "SUCCESS", `Completed processing ${image}`);
+        } catch (error) {
+          failedUploads.push(image);
+          log("ERROR", "FAIL", `Failed processing ${image}: ${error.message}`);
+          continue;
+        }
+      }
+    }
   }
+
+  await browser.close();
 })();

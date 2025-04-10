@@ -1,14 +1,14 @@
 {
   "name": "puppeteer_test",
   "version": "1.0.0",
-  "main": "app.js",
+  "main": "app.win.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "win": "node app.win.js"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "author": "Smit | Het | Harshil",
+  "license": "MIT",
+  "description": "An automation tool for uploading and evaluation. ",
   "dependencies": {
     "puppeteer": "^24.6.0"
   }
